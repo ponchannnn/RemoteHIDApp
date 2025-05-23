@@ -1,0 +1,53 @@
+body {
+  font-family: 'Segoe UI', 'Meiryo', sans-serif;
+  background: #f5f6fa;
+  margin: 0;
+  padding: 0;
+}
+
+div {
+  margin: 30px auto;
+  width: 90%;
+  max-width: 400px;
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  padding: 24px 20px;
+}
+
+input[type="text"], input[type="number"], input[type="password"], input[type="search"] {
+  font-size: 1rem;
+  padding: 8px 10px;
+  margin: 0 16px 8px 0;
+  border: 1px solid #ccc;
+  border-radius: 5px;
+  width: 140px;
+  box-sizing: border-box;
+}
+
+input#keyInput {
+  width: 90%;
+  margin-top: 10px;
+}
+
+button {
+  font-size: 1rem;
+  padding: 8px 18px;
+  background: #0984e3;
+  color: #fff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  margin-right: 8px;
+  margin-top: 8px;
+  transition: background 0.2s;
+}
+button:hover {
+  background: #74b9ff;
+}
+
+#status {
+  font-size: 1rem;
+  margin-left: 10px;
+  color: #636e72;
+}

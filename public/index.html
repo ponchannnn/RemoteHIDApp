@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="../assets/style.css">
+  <title>Raspberry Pi Remote Keyboard</title>
+</head>
+<body>
+  <div>
+    <input id="ip" placeholder="IPアドレス" value="192.168.11.5">
+    <input id="port" placeholder="ポート" value="5555">
+    <button id="connectBtn">接続</button>
+    <button id="disconnectBtn" disabled>切断</button>
+    <button id="setupBtn">USB有効化</button>
+    <button id="cleanupBtn">USB無効化</button>
+    <span id="statusLabel">未接続</span>
+  </div>
+  <div>
+    <input id="keyInput" placeholder="キーボード入力" />
+  </div>
+  <script src="../renderer.js"></script>
+</body>
+</html>
