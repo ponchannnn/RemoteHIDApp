@@ -31,8 +31,8 @@ KEY_MAP = {
 
     # 特殊キー
     'PrintScreen': 70, 'ScrollLock': 71, 'Pause': 72, 'Insert': 73, 'Home': 74, 'PageUp': 75,
-    'Delete': 76, 'End': 77, 'PageDown': 78, 'RightArrow': 79, 'LeftArrow': 80,
-    'DownArrow': 81, 'UpArrow': 82,
+    'Delete': 76, 'End': 77, 'PageDown': 78, 'RightArrow': 79, 'ArrowRight': 79, 'LeftArrow': 80, 'ArrowLeft': 80,
+    'DownArrow': 81,'ArrowDown': 81, 'UpArrow': 82, 'ArrowUp': 82,
 
     # テンキー
     'NumLock': 83, 'Keypad/': 84, 'Keypad*': 85, 'Keypad-': 86, 'Keypad+': 87, 'KeypadEnter': 88,
@@ -84,7 +84,7 @@ def write_report(report):
 
 def write_mouse(report):
     with open('/dev/hidg1', 'rb+') as fd:
-        fd.write(report.encode())
+        fd.write(report)
 
 def get_key():
     """キーボード入力を取得（特殊キー対応）"""
@@ -157,7 +157,42 @@ def send_key_event(key_event):
     else:
         print(f"Unsupported key: {key_event}")
 
+def move_mouse(x_ratio, y_ratio, left=0, right=0, center=0, side1=0, side2=0, wheel=0, hwheel=0):
+    """
+    タブレット型絶対座標マウスHIDレポート送信
+    :param x_ratio: 0.0〜1.0 のX座標
+    :param y_ratio: 0.0〜1.0 のY座標
+    :param left: 1=左ボタン, 0=離す
+    :param right: 1=右ボタン, 0=離す
+    :param center: 1=中ボタン, 0=離す
+    :param side1: サイドボタン1（例: 戻る）
+    :param side2: サイドボタン2（例: 進む）
+    :param wheel: 垂直ホイール（-127〜127）
+    :param hwheel: 水平ホイール（-127〜127）
+    """
+    abs_x = int(x_ratio * 32767)
+    abs_y = int(y_ratio * 32767)
+    wheel_val = max(-128, min(127, int(wheel)))
+    hwheel_val = max(-128, min(127, int(hwheel)))
+    # ボタンビット: left=左, right=右, center=中
+    buttons = (
+        (left & 1) |
+        ((right & 1) << 1) |
+        ((center & 1) << 2) |
+        ((side1 & 1) << 3) |
+        ((side2 & 1) << 4)
+    )
+    report = bytes([
+        buttons,
+        abs_x & 0xFF, (abs_x >> 8) & 0xFF,
+        abs_y & 0xFF, (abs_y >> 8) & 0xFF,
+        wheel_val & 0xFF,
+        hwheel_val & 0xFF
+    ])
+    write_mouse(report)
+
 def handle_client(conn):
+    buffer = ""
     while True:
         data = conn.recv(1024)
         if not data:
@@ -170,12 +205,15 @@ def handle_client(conn):
                 key_event = json.loads(cmd[4:]) # key:を除いてパース
                 send_key_event(key_event)
             elif cmd.startswith("MOUSE:"):
-                # 例: MOUSE:move,10,0
-                parts = cmd.split(',')
-                if parts[1] == "move":
-                    x = int(parts[2])
-                    y = int(parts[3])
-                    # move_mouse(x, y)  # TODO:move_mouse関数を実装
+                try:
+                    _, params = cmd.split(':', 1)
+                    x_str, y_str, left, right, center, side1, side2, wheel, hwheel = params.split(',')
+                    move_mouse(
+                        float(x_str), float(y_str),
+                        int(left), int(right), int(center), int(side1), int(side2), int(wheel), int(hwheel)
+                    )
+                except Exception as e:
+                    print(f"MOUSE parse error: {e}", flush=True)
             elif cmd == "CMD:ISTICKTOIT_USB":
                 try:
                     subprocess.run(['sudo', '/bin/isticktoit_usb'], check=True)
@@ -184,21 +222,35 @@ def handle_client(conn):
                     conn.sendall(f'ERR:{e}\n'.encode())
             elif cmd == "CMD:REMOVE_GADGET":
                 try:
-                    subprocess.run(['sudo', 'rm', '-rf', '/kernel/config/usb_gadget/isticktoit'], check=True)
+                    subprocess.run(['sudo', 'sh', '-c', 'echo "" > /sys/kernel/config/usb_gadget/isticktoit/UDC'], check=True)
+                    subprocess.run(['sudo', 'rm', '-rf', '/sys/kernel/config/usb_gadget/isticktoit'], check=True)
                     conn.sendall(b'OK\n')
                 except Exception as e:
                     conn.sendall(f'ERR:{e}\n'.encode())
     conn.close()
 
 def main():
+    try:
+        print("Attempting to configure USB gadget...", flush=True)
+        subprocess.run(['sudo', '/usr/local/bin/isticktoit_usb'], check=True, timeout=10) # 環境に合わせてパスを修正
+        print("USB gadget configured.", flush=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to configure USB gadget: {e}", flush=True)
+    except subprocess.TimeoutExpired:
+        print("Timeout configuring USB gadget.", flush=True)
+    except FileNotFoundError:
+        print("ERROR: isticktoit_usb script not found. Please check the path.", flush=True)
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind(('0.0.0.0', 5555))  # ポートは任意
     server.listen(1)
     print("Waiting for connection...")
     try:
         while True:
             conn, addr = server.accept()
-            threading.Thread(target=handle_client, args=(conn,)).start()
+            client_thread = threading.Thread(target=handle_client, args=(conn,))
+            client_thread.daemon = True # メインスレッド終了時に子スレッドも終了
+            client_thread.start()
     except KeyboardInterrupt:
         print("\nShutting down server...")
     finally:
