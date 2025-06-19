@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-import socket
+import asyncio
+import websockets
 import threading
 import sys
 import termios
 import tty
 import json
 import subprocess
+import cv2
+import numpy as np
+import struct
+import time
+import signal
+
+import gi
+gi.require_version('Gst', '1.0')
+gi.require_version('GstRtspServer', '1.0')
+from gi.repository import Gst, GstRtspServer, GLib
 
 # USB HID キーボードのスキャンコードマッピング（日本語キーボード対応）
 KEY_MAP = {
@@ -78,55 +89,22 @@ MODIFIER_MAP = {
 
 NULL_CHAR = chr(0)
 
+rtsp_server_running = False
+rtsp_server_loop = None
+rtsp_server_process = None # GStreamerをサブプロセスで動かす場合
+video_capture_device = "/dev/video0"
+rtsp_port = "5554"
+rtsp_mount_point = "/stream"
+
 def write_report(report):
-    with open('/dev/hidg0', 'rb+') as fd:
-        fd.write(report.encode())
+    try:
+        with open('/dev/hidg0', 'rb+') as fd: fd.write(report.encode())
+    except Exception as e: print(f"Error /dev/hidg0: {e}", flush=True)
 
 def write_mouse(report):
-    with open('/dev/hidg1', 'rb+') as fd:
-        fd.write(report)
-
-def get_key():
-    """キーボード入力を取得（特殊キー対応）"""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
     try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-        if ord(ch) == 127:  # バックスペース
-            return 'Backspace'
-        elif ord(ch) == 27:  # エスケープシーケンス
-            next1, next2 = sys.stdin.read(1), sys.stdin.read(1)
-            if next1 == '[':
-                if next2 == '1':  # Home
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'Home'
-                elif next2 == '2':  # Insert
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'Insert'
-                elif next2 == '3':  # Delete
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'Delete'
-                elif next2 == '4':  # End
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'End'
-                elif next2 == '5':  # PageUp
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'PageUp'
-                elif next2 == '6':  # PageDown
-                    sys.stdin.read(1)  # Consume '~'
-                    return 'PageDown'
-                elif next2 == 'A':  # Up Arrow
-                    return 'UpArrow'
-                elif next2 == 'B':  # Down Arrow
-                    return 'DownArrow'
-                elif next2 == 'C':  # Right Arrow
-                    return 'RightArrow'
-                elif next2 == 'D':  # Left Arrow
-                    return 'LeftArrow'
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-    return ch
+        with open('/dev/hidg1', 'rb+') as fd: fd.write(report)
+    except Exception as e: print(f"Error /dev/hidg1: {e}", flush=True)
 
 def send_key_event(key_event):
     modifiers = 0
@@ -191,7 +169,66 @@ def move_mouse(x_ratio, y_ratio, left=0, right=0, center=0, side1=0, side2=0, wh
     ])
     write_mouse(report)
 
-def handle_client(conn):
+class RTSPServer():
+    def __init__(self):
+        self.server = GstRtspServer.Server()
+        self.server.set_service(rtsp_port)
+        self.mounts = self.server.get_mount_points()
+        
+        # Raspberry Pi 5では、v4l2src -> videoconvert -> v4l2h264enc (ハードウェアエンコーダ) を使う
+        # `!` の前後にスペースを入れること
+        # 解像度やフレームレートはキャプチャーボードとエンコーダの能力に合わせて調整
+        # `queue` エレメントを適宜挟むと安定性が向上することがある
+        launch_str = (
+            f"( v4l2src device={video_capture_device} ! "
+            f"videoconvert ! queue ! "
+            f"video/x-raw,width=1280,height=720,framerate=30/1 ! queue ! " # 必要に応じて解像度・FPS指定
+            f"v4l2h264enc extra-controls=\"controls,video_bitrate=2000000\" ! " # ビットレート2Mbps例
+            f"rtph264pay name=pay0 pt=96 )" # H.235ならrtph265pay
+        )
+        print(f"GStreamer launch string: {launch_str}", flush=True)
+
+        self.factory = GstRtspServer.RTSPMediaFactory()
+        self.factory.set_launch_string(launch_str)
+        self.factory.set_shared(True) # 複数のクライアントが同じストリームを視聴可能にする
+        self.mounts.add_factory(rtsp_mount_point, self.factory)
+        
+        self.main_loop = GLib.MainLoop()
+
+    def start(self):
+        global rtsp_server_running, rtsp_server_loop
+        if rtsp_server_running:
+            print("RTSP server is already running.", flush=True)
+            return
+        
+        print("Starting RTSP server...", flush=True)
+        self.server.attach(None) # GLib.MainContext (Noneでデフォルト)
+        rtsp_server_running = True
+        rtsp_server_loop = self.main_loop # グローバルにループを保持
+
+        # GLib.MainLoopを別スレッドで実行
+        self.loop_thread = threading.Thread(target=self.main_loop.run, daemon=True)
+        self.loop_thread.start()
+        print(f"RTSP Server started. Stream available at rtsp://<RaspberryPi_IP>:{rtsp_port}{rtsp_mount_point}", flush=True)
+
+    def stop(self):
+        global rtsp_server_running, rtsp_server_loop
+        if not rtsp_server_running or not rtsp_server_loop:
+            print("RTSP server is not running.", flush=True)
+            return
+        
+        print("Stopping RTSP server...", flush=True)
+        rtsp_server_loop.quit()
+        self.loop_thread.join(timeout=2) # スレッド終了を待つ
+        # GstRtspServer.Serverオブジェクトの明示的なクリーンアップは通常不要
+        # self.mounts.remove_factory(rtsp_mount_point) # 必要なら
+        rtsp_server_running = False
+        rtsp_server_loop = None
+        print("RTSP server stopped.", flush=True)
+
+rtsp_instance = None
+
+def handler(conn):
     buffer = ""
     while True:
         data = conn.recv(1024)
@@ -229,32 +266,118 @@ def handle_client(conn):
                     conn.sendall(f'ERR:{e}\n'.encode())
     conn.close()
 
-def main():
+# WebSocketハンドラ
+async def handler(websocket, path):
+    global video_streaming_active, rtsp_instance # video_streaming_active は RTSPサーバーの状態と連動させる
+    print(f"Client connected from {websocket.remote_address}", flush=True)
+
+    try:
+        async for message in websocket:
+            if isinstance(message, str):
+                cmd = message.strip()
+                if cmd.startswith("KEY:"):
+                    try:
+                        key_event = json.loads(cmd[4:])
+                        send_key_event(key_event)
+                    except Exception as e: print(f"Error KEY: {e}", flush=True)
+
+                elif cmd.startswith("MOUSE:"):
+                    try:
+                        _, params = cmd.split(':', 1)
+                        values = list(map(float, params.split(',')))
+                        move_mouse(values[0], values[1], int(values[2]), int(values[3]), int(values[4]), int(values[5]), int(values[6]), int(values[7]), int(values[8]))
+                    except Exception as e: print(f"Error MOUSE: {e}", flush=True)
+
+                elif cmd == "VIDEO:ONSTART":
+                    if not rtsp_server_running:
+                        print("VIDEO:ONSTART received. Starting RTSP server.", flush=True)
+                        if rtsp_instance is None:
+                             rtsp_instance = RTSPServer()
+                        rtsp_instance.start() # 別スレッドでGLib.MainLoopが実行される
+                        if rtsp_server_running:
+                             await websocket.send(f"VIDEO:STARTED_RTSP:{rtsp_port}{rtsp_mount_point}")
+                        else:
+                             await websocket.send("VIDEO:ERROR_STARTING_RTSP")
+                    else:
+                        print("RTSP server already active.", flush=True)
+                        await websocket.send(f"VIDEO:ALREADY_ACTIVE_RTSP:{rtsp_port}{rtsp_mount_point}")
+
+                elif cmd == "VIDEO:ONSTOP":
+                    if rtsp_server_running and rtsp_instance:
+                        print("VIDEO:ONSTOP received. Stopping RTSP server.", flush=True)
+                        rtsp_instance.stop()
+                        await websocket.send("VIDEO:STOPPED_RTSP")
+                    else:
+                        print("RTSP server not active or instance not created.", flush=True)
+                        await websocket.send("VIDEO:NOT_ACTIVE_RTSP")
+                
+                elif cmd == "CMD:ISTICKTOIT_USB":
+                    try:
+                        subprocess.run(['sudo', '/usr/bin/isticktoit_usb'], check=True, timeout=15)
+                        await websocket.send('CMD_RESP:OK_ISTICKTOIT_USB')
+                    except Exception as e: await websocket.send(f'CMD_RESP:ERR_ISTICKTOIT_USB:{e}')
+
+                elif cmd == "CMD:REMOVE_GADGET":
+                    try:
+                        udc_path = '/sys/kernel/config/usb_gadget/isticktoit/UDC'
+                        if subprocess.run(['sudo', 'test', '-f', udc_path]).returncode == 0:
+                             subprocess.run(['sudo', 'sh', '-c', f'echo "" > {udc_path}'], check=True, timeout=5)
+                        await websocket.send('CMD_RESP:OK_REMOVE_GADGET')
+                    except Exception as e: await websocket.send(f'CMD_RESP:ERR_REMOVE_GADGET:{e}')
+                else:
+                    print(f"Unknown string command: {cmd}", flush=True)
+            # バイナリデータの受信は想定しない
+    except websockets.exceptions.ConnectionClosed:
+        print(f"Client {websocket.remote_address} disconnected.", flush=True)
+    except Exception as e:
+        print(f"Error in WebSocket handler: {e}", flush=True)
+    finally:
+        if rtsp_server_running and rtsp_instance:
+            print("Client disconnected, stopping RTSP server.", flush=True)
+            rtsp_instance.stop()
+        print(f"Client {websocket.remote_address} connection closed.", flush=True)
+
+
+async def main_async():
+    Gst.init(None) # GStreamerの初期化
+
+    # USBガジェット設定の試み (前回と同様)
     try:
         print("Attempting to configure USB gadget...", flush=True)
-        subprocess.run(['sudo', '/usr/local/bin/isticktoit_usb'], check=True, timeout=10) # 環境に合わせてパスを修正
+        subprocess.run(['sudo', '/usr/local/bin/isticktoit_usb'], check=True, timeout=15)
         print("USB gadget configured.", flush=True)
-    except subprocess.CalledProcessError as e:
+    except Exception as e:
         print(f"Failed to configure USB gadget: {e}", flush=True)
-    except subprocess.TimeoutExpired:
-        print("Timeout configuring USB gadget.", flush=True)
-    except FileNotFoundError:
-        print("ERROR: isticktoit_usb script not found. Please check the path.", flush=True)
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', 5555))  # ポートは任意
-    server.listen(1)
-    print("Waiting for connection...")
+
+    # WebSocketサーバー起動
+    websocket_server = await websockets.serve(handler, "0.0.0.0", 8765)
+    print("WebSocket server started on ws://0.0.0.0:8765", flush=True)
+    
+    # シグナルハンドラの設定 (Ctrl+Cで終了できるように)
+    loop = asyncio.get_running_loop()
+    stop = loop.create_future()
+    loop.add_signal_handler(signal.SIGINT, stop.set_result, None)
+    loop.add_signal_handler(signal.SIGTERM, stop.set_result, None)
+
+    await stop # Ctrl+C または SIGTERM を待つ
+
+    # サーバー停止処理
+    print("Shutting down servers...", flush=True)
+    if rtsp_server_running and rtsp_instance:
+        rtsp_instance.stop()
+    websocket_server.close()
+    await websocket_server.wait_closed()
+    print("Servers stopped.", flush=True)
+
+def main():
     try:
-        while True:
-            conn, addr = server.accept()
-            client_thread = threading.Thread(target=handle_client, args=(conn,))
-            client_thread.daemon = True # メインスレッド終了時に子スレッドも終了
-            client_thread.start()
+        asyncio.run(main_async())
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\nShutting down server by KeyboardInterrupt...")
+    except Exception as e:
+        print(f"Unhandled exception in main: {e}", flush=True)
     finally:
-        server.close()
+        print("Server stopped.")
 
 if __name__ == "__main__":
     main()

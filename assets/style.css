@@ -5,14 +5,22 @@ body {
   padding: 0;
 }
 
-div {
+.main-container {
   margin: 30px auto;
-  width: 90%;
-  max-width: 400px;
+  width: 95vw;
+  max-width: 900px;
   background: #fff;
   border-radius: 10px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.08);
   padding: 24px 20px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
 }
 
 input[type="text"], input[type="number"], input[type="password"], input[type="search"] {
@@ -46,17 +54,42 @@ button:hover {
   background: #74b9ff;
 }
 
-#status {
+#statusLabel {
   font-size: 1rem;
   margin-left: 10px;
   color: #636e72;
 }
 
-#mouseCanvas {
+.video-area {
+  position: relative;
   width: 100%;
-  height: 200px;
-  border: 1px solid #ccc;
+  aspect-ratio: 16/9;
+  max-width: 800px;
+  margin: 32px auto 48px auto;
+  background: #eaeaea;
+  border-radius: 8px;
+  box-shadow: 0 1px 8px rgba(0,0,0,0.05);
+  overflow: hidden;
+  min-width: 240px;
+  min-height: 180px;
+  padding: 20px;
+}
+
+#videoFrame, #mouseCanvas {
+  position: absolute;
+  left: 0; top: 0;
+  width: 100%;
+  height: 100%;
   border-radius: 5px;
-  margin-top: 10px;
-  background:#fafafa;
+  display: block;
+}
+
+#videoFrame {
+  background: #222;
+  z-index: 1;
+}
+
+#mouseCanvas {
+  z-index: 2;
+  pointer-events: auto;
 }

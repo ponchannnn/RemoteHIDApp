@@ -5,6 +5,11 @@ const cleanupBtn = document.getElementById('cleanupBtn');
 const statusLabel = document.getElementById('statusLabel');
 const canvas = document.getElementById('mouseCanvas');
 const ctx = canvas.getContext('2d');
+const videoFrame = document.getElementById('videoFrame');
+
+const BASE_WIDTH = 320;
+const BASE_HEIGHT = 240;
+
 
 let connecting = false;
 let mouseX = canvas.width / 2;
@@ -51,6 +56,18 @@ disconnectBtn.addEventListener('click', () => {
   statusLabel.textContent = '未接続';
 });
 
+document.getElementById('videoStartBtn').onclick = () => {
+  console.log('videoStartBtn clicked');
+  window.API.videoStart();
+  document.getElementById('videoStartBtn').disabled = true;
+  document.getElementById('videoStopBtn').disabled = false;
+};
+document.getElementById('videoStopBtn').onclick = () => {
+  window.API.videoStop();
+  document.getElementById('videoStartBtn').disabled = false;
+  document.getElementById('videoStopBtn').disabled = true;
+};
+
 document.addEventListener('keydown', (e) => {
     const keyEvent = {
         key: e.key,
@@ -63,14 +80,7 @@ document.addEventListener('keydown', (e) => {
     window.API.sendKey(keyEvent);
 });
 
-function drawPointer() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.beginPath();
-  ctx.arc(mouseX, mouseY, 8, 0, 2 * Math.PI);
-  ctx.fillStyle = '#0984e3';
-  ctx.fill();
-}
-drawPointer();
+
 
 // マウス移動（ホバー）
 canvas.addEventListener('mousemove', (e) => {
@@ -113,7 +123,6 @@ function sendMouseWithState(e) {
   const rect = canvas.getBoundingClientRect();
   const x = (e.clientX - rect.left) / rect.width;
   const y = (e.clientY - rect.top) / rect.height;
-  drawPointer();
   window.API.sendMouse(x, y, mouseButtons.left, mouseButtons.right, mouseButtons.center, mouseButtons.side1, mouseButtons.side2, 0, 0);
 }
 
@@ -122,7 +131,19 @@ function resizeCanvasToDisplaySize() {
   if (canvas.width !== rect.width || canvas.height !== rect.height) {
     canvas.width = rect.width;
     canvas.height = rect.height;
+    videoFrame.width = rect.width;
+    videoFrame.height = rect.height;
   }
 }
 window.addEventListener('resize', resizeCanvasToDisplaySize);
 resizeCanvasToDisplaySize();
+
+window.API.onVideoFrame((data) => {
+  const blob = new Blob([data], { type: 'image/jpeg' });
+  const url = URL.createObjectURL(blob);
+  videoFrame.src = url;
+  videoFrame.onload = () => {
+    if (videoFrame._oldUrl) URL.revokeObjectURL(videoFrame._oldUrl);
+    videoFrame._oldUrl = url;
+  };
+});

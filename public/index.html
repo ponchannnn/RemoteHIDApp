@@ -6,18 +6,21 @@
   <title>Raspberry Pi Remote Keyboard</title>
 </head>
 <body>
-  <div>
-    <input id="ip" placeholder="IPアドレス" value="192.168.11.5">
-    <input id="port" placeholder="ポート" value="5555">
+  <div class="toolbar">
+    <input id="ip" placeholder="IPアドレス" value="192.168.11.14">
+    <input id="port" placeholder="ポート" value="8765">
+    <input id="keyInput" placeholder="キーボード入力" />
     <button id="connectBtn">接続</button>
     <button id="disconnectBtn" disabled>切断</button>
     <button id="setupBtn">USB有効化</button>
     <button id="cleanupBtn">USB無効化</button>
+    <button id="videoStartBtn">ビデオスタート</button>
+    <button id="videoStopBtn" disabled>ビデオストップ</button>
     <span id="statusLabel">未接続</span>
   </div>
-  <div>
-    <input id="keyInput" placeholder="キーボード入力" />
-    <canvas id="mouseCanvas" width="300" height="200"></canvas>
+  <div class="video-area">
+    <img id="videoFrame" alt="Video Stream">
+    <canvas id="mouseCanvas"></canvas>
   </div>
   <script src="../renderer.js"></script>
 </body>
