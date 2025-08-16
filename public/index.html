@@ -9,18 +9,24 @@
   <div class="toolbar">
     <input id="ip" placeholder="IPアドレス" value="192.168.11.14">
     <input id="port" placeholder="ポート" value="8765">
-    <input id="keyInput" placeholder="キーボード入力" />
     <button id="connectBtn">接続</button>
     <button id="disconnectBtn" disabled>切断</button>
     <button id="setupBtn">USB有効化</button>
     <button id="cleanupBtn">USB無効化</button>
+    <select id="videoDeviceSelect" disabled>
+      <option value="">ビデオデバイス選択</option>
+    </select>
     <button id="videoStartBtn">ビデオスタート</button>
     <button id="videoStopBtn" disabled>ビデオストップ</button>
+    <select id="audioDeviceSelect" disabled>
+      <option value="">オーディオデバイス選択</option>
+    </select>
+    <button id="micStartBtn">マイクスタート</button>
+    <button id="micStopBtn" disabled>マイクストップ</button>
     <span id="statusLabel">未接続</span>
   </div>
-  <div class="video-area">
-    <img id="videoFrame" alt="Video Stream">
-    <canvas id="mouseCanvas"></canvas>
+  <div class="video-area" id="videoArea">
+    <video id="webrtcVideo" autoplay playsinline></video>
   </div>
   <script src="../renderer.js"></script>
 </body>

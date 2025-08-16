@@ -2,70 +2,155 @@ const connectBtn = document.getElementById('connectBtn');
 const disconnectBtn = document.getElementById('disconnectBtn');
 const setupBtn = document.getElementById('setupBtn');
 const cleanupBtn = document.getElementById('cleanupBtn');
+const toolbar = document.querySelector('.toolbar');
+const videoArea = document.getElementById('videoArea');
+const webrtcVideo = document.getElementById('webrtcVideo');
+const webrtcAudio = document.getElementById('webrtcAudio');
+const videoStartBtn = document.getElementById('videoStartBtn');
+const videoStopBtn = document.getElementById('videoStopBtn');
+const audioDeviceSelect = document.getElementById('audioDeviceSelect');
+const videoDeviceSelect = document.getElementById('videoDeviceSelect');
+const micStartBtn = document.getElementById('micStartBtn');
+const micStopBtn = document.getElementById('micStopBtn');
 const statusLabel = document.getElementById('statusLabel');
-const canvas = document.getElementById('mouseCanvas');
-const ctx = canvas.getContext('2d');
-const videoFrame = document.getElementById('videoFrame');
 
 const BASE_WIDTH = 320;
 const BASE_HEIGHT = 240;
-
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
 
 let connecting = false;
-let mouseX = canvas.width / 2;
-let mouseY = canvas.height / 2;
+let mouseX = webrtcVideo.width / 2;
+let mouseY = webrtcVideo.height / 2;
 let mouseButtons = { left: 0, right: 0, center: 0, side1: 0, side2: 0 };
+
+let connectStatus = "未接続";
+let micStatus = "OFF";
+let videoStatus = "OFF";
+let usbStatus = "";
+let errorStatus = "";
+
+let pc = null;
+let wantVideo = false;
+let wantAudio = false;
 
 connectBtn.addEventListener('click', async () => {
   if (connecting) return;
   connecting = true;
   connectBtn.disabled = true;
   connectBtn.textContent = '接続中...';
-  statusLabel.textContent = '🔄 接続中...';
+  connectStatus = '🔄 接続中...';
+  statusLabel.textContent = connectStatus;
 
   const ip = document.getElementById('ip').value;
   const port = Number(document.getElementById('port').value);
   const result = await window.API.connect(ip, port);
 
   connecting = false;
-  if (result) {
+  if (result && result.connected) {
     connectBtn.textContent = '接続済み';
     connectBtn.disabled = true;
     disconnectBtn.disabled = false;
-    statusLabel.textContent = '✅ 接続済み';
+    connectStatus = '✅ 接続済み';
+    // オーディオデバイスリストをセット
+    audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
+    if (Array.isArray(result.audioDevices)) {
+      result.audioDevices.forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev.index;
+        opt.textContent = `${dev.index}: ${dev.name} (${dev.max_input_channels}ch)`;
+        audioDeviceSelect.appendChild(opt);
+      });
+      audioDeviceSelect.disabled = false;
+    } else {
+      audioDeviceSelect.disabled = true;
+    }
+    // ビデオデバイスリストをセット
+    videoDeviceSelect.innerHTML = '<option value="">ビデオデバイス選択</option>';
+    if (Array.isArray(result.videoDevices)) {
+      result.videoDevices.forEach(dev => {
+        const opt = document.createElement('option');
+        opt.value = dev.index;
+        opt.textContent = `${dev.index}: ${dev.name}`;
+        videoDeviceSelect.appendChild(opt);
+      });
+      videoDeviceSelect.disabled = false;
+    } else {
+      videoDeviceSelect.disabled = true;
+    }
+    updateStatusLabel();
   } else {
     connectBtn.textContent = '接続';
     connectBtn.disabled = false;
-    statusLabel.textContent = '❌ 接続失敗';
+    disconnectBtn.disabled = true;
+    connectStatus = '❌ 接続失敗';
+    statusLabel.textContent = connectStatus;
+    audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
+    audioDeviceSelect.disabled = true;
+    videoDeviceSelect.innerHTML = '<option value="">ビデオデバイス選択</option>';
+    videoDeviceSelect.disabled = true;
     alert('接続失敗');
   }
 });
 
 setupBtn.addEventListener('click', () => {
-  window.API.sendCommand('CMD:ISTICKTOIT_USB');
+  window.API.usbSetup();
 });
 cleanupBtn.addEventListener('click', () => {
-  window.API.sendCommand('CMD:REMOVE_GADGET');
+  window.API.usbCleanup();
 });
 
 disconnectBtn.addEventListener('click', () => {
-  window.API.disconnect && window.API.disconnect();
-  connectBtn.textContent = '接続';
-  connectBtn.disabled = false;
-  disconnectBtn.disabled = true;
-  statusLabel.textContent = '未接続';
+  window.API.disconnect();
 });
 
-document.getElementById('videoStartBtn').onclick = () => {
-  console.log('videoStartBtn clicked');
+videoStartBtn.onclick = () => {
+  const selectedDevice = videoDeviceSelect.value;
+  if (!selectedDevice) {
+    alert('ビデオデバイスを選択してください');
+    return;
+  }
   window.API.videoStart();
-  document.getElementById('videoStartBtn').disabled = true;
-  document.getElementById('videoStopBtn').disabled = false;
+  wantVideo = true;
+  videoStartBtn.disabled = true;
+  videoStopBtn.disabled = false;
 };
-document.getElementById('videoStopBtn').onclick = () => {
+
+videoStopBtn.onclick = () => {
+  blackoutVideo();
   window.API.videoStop();
-  document.getElementById('videoStartBtn').disabled = false;
-  document.getElementById('videoStopBtn').disabled = true;
+  wantVideo = false;
+  if (!wantVideo && !wantAudio && pc) {
+    pc.close();
+    pc = null;
+  }
+  videoStartBtn.disabled = false;
+  videoStopBtn.disabled = true;
+};
+
+micStartBtn.onclick = () => {
+  const selectedDevice = audioDeviceSelect.value;
+  if (!selectedDevice) {
+    alert('オーディオデバイスを選択してください');
+    return;
+  }
+  micStartBtn.disabled = true;
+  micStopBtn.disabled = false;
+  window.API.micStart(Number(selectedDevice));
+  wantAudio = true;
+  webrtcAudio.play().catch(e => {
+    console.warn("Pre-play failed, this is expected on first interaction.", e);
+  });
+};
+
+micStopBtn.onclick = () => {
+  window.API.micStop();
+  wantAudio = false;
+  if (!wantVideo && !wantAudio && pc) {
+    pc.close();
+    pc = null;
+  }
+  micStartBtn.disabled = false;
+  micStopBtn.disabled = true;
 };
 
 document.addEventListener('keydown', (e) => {
@@ -83,12 +168,11 @@ document.addEventListener('keydown', (e) => {
 
 
 // マウス移動（ホバー）
-canvas.addEventListener('mousemove', (e) => {
+webrtcVideo.addEventListener('mousemove', (e) => {
   sendMouseWithState(e);
 });
 
-canvas.addEventListener('mousedown', (e) => {
-  console.log('mousedown', e.button);
+webrtcVideo.addEventListener('mousedown', (e) => {
   if (e.button === 0) mouseButtons.left = 1;
   if (e.button === 2) mouseButtons.right = 1;
   if (e.button === 1) mouseButtons.center = 1;
@@ -97,7 +181,7 @@ canvas.addEventListener('mousedown', (e) => {
   sendMouseWithState(e);
 });
 
-canvas.addEventListener('mouseup', (e) => {
+webrtcVideo.addEventListener('mouseup', (e) => {
   if (e.button === 0) mouseButtons.left = 0;
   if (e.button === 2) mouseButtons.right = 0;
   if (e.button === 1) mouseButtons.center = 0;
@@ -107,8 +191,8 @@ canvas.addEventListener('mouseup', (e) => {
 });
 
 // スクロール（ホイール）
-canvas.addEventListener('wheel', (e) => {
-  const rect = canvas.getBoundingClientRect();
+webrtcVideo.addEventListener('wheel', (e) => {
+  const rect = webrtcVideo.getBoundingClientRect();
   const x = (e.clientX - rect.left) / rect.width;
   const y = (e.clientY - rect.top) / rect.height;
   const wheel = Math.max(-127, Math.min(127, Math.round(-e.deltaY)));
@@ -117,33 +201,178 @@ canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
 });
 
-canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+webrtcVideo.addEventListener('contextmenu', (e) => e.preventDefault());
 
 function sendMouseWithState(e) {
-  const rect = canvas.getBoundingClientRect();
+  const rect = webrtcVideo.getBoundingClientRect();
   const x = (e.clientX - rect.left) / rect.width;
   const y = (e.clientY - rect.top) / rect.height;
   window.API.sendMouse(x, y, mouseButtons.left, mouseButtons.right, mouseButtons.center, mouseButtons.side1, mouseButtons.side2, 0, 0);
 }
 
-function resizeCanvasToDisplaySize() {
-  const rect = canvas.getBoundingClientRect();
-  if (canvas.width !== rect.width || canvas.height !== rect.height) {
-    canvas.width = rect.width;
-    canvas.height = rect.height;
-    videoFrame.width = rect.width;
-    videoFrame.height = rect.height;
+function resizeVideoToWindow() {
+  const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
+  const winW = window.innerWidth;
+  const winH = window.innerHeight;
+  const availableH = winH - toolbarHeight;
+  const aspect = 16 / 9;
+  let videoW = winW - 4;
+  let videoH = (winW - 4) / aspect;
+  if (videoH > availableH) {
+    videoH = availableH - 4;
+    videoW = (availableH - 4) * aspect;
   }
+  videoArea.style.width = videoW + "px";
+  videoArea.style.height = videoH + "px";
 }
-window.addEventListener('resize', resizeCanvasToDisplaySize);
-resizeCanvasToDisplaySize();
+window.addEventListener('resize', resizeVideoToWindow);
+resizeVideoToWindow();
 
-window.API.onVideoFrame((data) => {
-  const blob = new Blob([data], { type: 'image/jpeg' });
-  const url = URL.createObjectURL(blob);
-  videoFrame.src = url;
-  videoFrame.onload = () => {
-    if (videoFrame._oldUrl) URL.revokeObjectURL(videoFrame._oldUrl);
-    videoFrame._oldUrl = url;
-  };
+window.API.onWebRTCSignal(async (msg) => {
+  if (!pc) return;
+  if (msg.type === 'answer') {
+    await pc.setRemoteDescription({ type: 'answer', sdp: msg.sdp });
+  } else if (msg.type === 'ice') {
+    await pc.addIceCandidate({
+      candidate: msg.candidate,
+      sdpMid: msg.sdpMid,
+      sdpMLineIndex: msg.sdpMLineIndex
+    });
+  }
 });
+
+async function startWebRTC() {
+  if (pc) pc.close();
+  pc = new RTCPeerConnection();
+
+  if (wantVideo) {
+    pc.addTransceiver('video', { direction: 'recvonly' });
+  }
+  if (wantAudio) {
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+  }
+
+  pc.ontrack = (event) => {
+    console.log("ontrack event kind:", event.track.kind);
+    if (event.track.kind === 'video') {
+      console.log("video track received");
+      console.log("video tracks:", event.streams[0].getVideoTracks().length);
+      webrtcVideo.srcObject = event.streams[0];
+      webrtcVideo.muted = true;
+      webrtcVideo.autoplay = true;
+      webrtcVideo.play().catch(e => console.error('video play error', e));
+    } else if (event.track.kind === 'audio') {
+      webrtcVideo.srcObject = event.streams[0];
+      webrtcVideo.muted = false;
+      webrtcVideo.autoplay = true;
+      webrtcVideo.play().catch(e => console.error('audio play error', e));
+    }
+  };
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      window.API.sendWebRTCSignal({
+        type: 'ice',
+        candidate: event.candidate.candidate,
+        sdpMid: event.candidate.sdpMid,
+        sdpMLineIndex: event.candidate.sdpMLineIndex
+      });
+    }
+  };
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  window.API.sendWebRTCSignal({
+    type: 'offer',
+    sdp: offer.sdp
+  });
+}
+
+webrtcVideo.addEventListener('error', e => console.error('video error', e));
+webrtcVideo.addEventListener('loadeddata', () => console.log('video loadeddata'));
+webrtcVideo.addEventListener('playing', () => console.log('video playing'));
+
+window.API.onAudioStatus((msg) => {
+  if (msg === "STARTED") {
+    micStartBtn.disabled = true;
+    micStopBtn.disabled = false;
+    micStatus = "ON";
+    startWebRTC();
+  } else if (msg === "STOPPED") {
+    micStartBtn.disabled = false;
+    micStopBtn.disabled = true;
+    micStatus = "OFF";
+  }
+  updateStatusLabel();
+});
+
+window.API.onVideoStatus((msg) => {
+  if (msg === "STARTED") {
+    videoStartBtn.disabled = true;
+    videoStopBtn.disabled = false;
+    videoStatus = "ON";
+    startWebRTC();
+  } else if (msg === "STOPPED") {
+    videoStartBtn.disabled = false;
+    videoStopBtn.disabled = true;
+    videoStatus = "OFF";
+  } else if (msg === "ALREADY_ACTIVE") {
+    videoStatus = "すでにON";
+  } else if (msg === "NOT_ACTIVE") {
+    videoStatus = "OFF";
+  }
+  updateStatusLabel();
+});
+
+window.API.onErrorMessage((msg) => {
+  errorStatus = msg;
+  updateStatusLabel();
+});
+
+window.API.onUsbMessage((msg) => {
+  usbStatus = msg;
+  updateStatusLabel();
+});
+
+window.API.onDisconnect(() => {
+  disconnectedStatus();
+});
+
+function disconnectedStatus() {
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+  blackoutVideo();
+  connectStatus = "未接続";
+  micStatus = "OFF";
+  videoStatus = "OFF";
+  usbStatus = "";
+  errorStatus = "";
+  wantVideo = false;
+  wantAudio = false;
+  connectBtn.disabled = false;
+  disconnectBtn.disabled = true;
+  micStartBtn.disabled = false;
+  micStopBtn.disabled = true;
+  videoStartBtn.disabled = false;
+  videoStopBtn.disabled = true;
+  
+  audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
+  videoDeviceSelect.innerHTML = '<option value="">ビデオデバイス選択</option>';
+  audioDeviceSelect.disabled = true;
+  videoDeviceSelect.disabled = true;
+  updateStatusLabel();
+}
+
+function updateStatusLabel() {
+  let status = `接続状態: ${connectStatus}`;
+  status += `マイク:${micStatus} ビデオ:${videoStatus}`;
+  if (usbStatus) status += ` USB:${usbStatus}`;
+  if (errorStatus) status += ` エラー:${errorStatus}`;
+  statusLabel.textContent = status;
+}
+
+function blackoutVideo() {
+  webrtcVideo.srcObject = null;
+  webrtcVideo.pause();
+  webrtcVideo.load();
+}
