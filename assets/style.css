@@ -86,18 +86,22 @@ select option {
 button {
   font-size: 1rem;
   padding: 8px 18px;
-  background: var(--wine-red);
-  color: #fff;
-  border: none;
+  background: #18181c;
+  color: #f3f3f3;
+  border: 1px solid var(--wine-red);
   border-radius: 0;
   cursor: pointer;
   margin-right: 8px;
   margin-top: 8px;
-  transition: background 0.2s;
-  box-shadow: 0 1px 4px rgba(122,26,43,0.10);
+  transition: border 0.2s, color 0.2s, background 0.2s;
+  box-shadow: none;
+  outline: none;
 }
+
 button:hover {
-  background: var(--wine-red-light);
+  border-color: var(--wine-red-light);
+  color: #fff;
+  background: #23232a;
 }
 
 #statusLabel {
@@ -114,7 +118,7 @@ button:hover {
   border-radius: 0;
   box-shadow: 0 1px 12px rgba(122,26,43,0.12);
   overflow: hidden;
-  border: 2px solid var(--wine-red);
+  border: 1px solid var(--wine-red);
 }
 
 #webrtcVideo {
@@ -123,7 +127,7 @@ button:hover {
   display: block;
   object-fit: contain;
   background: var(--dark-bg);
-  border: 2px solid var(--wine-red);
+  border: 1px solid var(--wine-red);
   border-radius: 0;
   box-sizing: border-box;
   outline: 0;

@@ -6,6 +6,9 @@
 # sudo apt install gstreamer1.0-v4l2 # Video4Linux2プラグイン
 # sudo apt install libportaudio2 # PortAudioライブラリ（音声ストリーミング用）
 # sudo pip install sounddevice # 音声ストリーミング用
+# sudo pip install dotenv # 環境変数読み込み用
+# sudo pip install aiohttp # Discord Webhook用
+
 import asyncio
 import websockets
 import threading
@@ -25,8 +28,11 @@ import signal
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
 from fractions import Fraction
-from av import AudioFrame
+from av import AudioFrame, VideoFrame
 import logging
+import aiohttp
+from dotenv import load_dotenv
+import socket
 
 KEY_MAP = {
     'a': 4, 'b': 5, 'c': 6, 'd': 7, 'e': 8, 'f': 9, 'g': 10, 'h': 11, 'i': 12, 'j': 13,
@@ -75,18 +81,12 @@ audio_streaming_active = False
 gstreamer_proc = None
 
 def write_report(report):
-    try:
-        with open('/dev/hidg0', 'rb+') as fd:
+    with open('/dev/hidg0', 'rb+') as fd:
             fd.write(report.encode())
-    except Exception as e:
-        print(f"Error writing to /dev/hidg0: {e}", flush=True)
 
 def write_mouse(report):
-    try:
-        with open('/dev/hidg1', 'rb+') as fd:
-            fd.write(report)
-    except Exception as e:
-        print(f"Error writing to /dev/hidg1: {e}", flush=True)
+    with open('/dev/hidg1', 'rb+') as fd:
+        fd.write(report)
 
 def send_key_event(key_event):
     modifiers = 0
@@ -188,7 +188,11 @@ class VideoStreamTrack(MediaStreamTrack):
         self.height = height
         self.fps = fps
         self.cap = None
-        self._stopped = False
+
+        self.pts_increment = 90000 / self.fps
+        self.frame_count = 0
+
+        self.lock = asyncio.Lock()
 
     def start(self):
         self.cap = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
@@ -196,30 +200,43 @@ class VideoStreamTrack(MediaStreamTrack):
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
         self.cap.set(cv2.CAP_PROP_FPS, self.fps)
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
-        fourcc = int(self.cap.get(cv2.CAP_PROP_FOURCC))
-        print("Current FOURCC:", "".join([chr((fourcc >> 8 * i) & 0xFF) for i in range(4)]), flush=True)
+        self.start_time = time.time()
 
-    def stop(self):
-        print("Stopping video stream...", flush=True)
-        if self.cap:
-            self.cap.release()
-            self.cap = None
+    async def stop(self):
+        async with self.lock:
+            if self.cap:
+                await asyncio.to_thread(self.cap.release)
+                self.cap = None
+        super().stop()
 
     async def recv(self):
-        if not self.cap:
-            self.start()
-        # print("Waiting for next timestamp...", flush=True)
-        # pts, time_base = await self.next_timestamp()
-        # print("Reading frame...", flush=True)
-        ret, frame = await asyncio.to_thread(self.cap.read)
-        if not ret:
-            raise Exception("Camera read failed")
-        frame = await asyncio.to_thread(cv2.cvtColor, frame, cv2.COLOR_BGR2RGB)
-        from av import VideoFrame
-        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
-        # video_frame.pts = pts
-        # video_frame.time_base = time_base
-        return video_frame
+        try:
+            async with self.lock:
+                if not self.cap:
+                    await asyncio.to_thread(self.start)
+                ret, frame = await asyncio.to_thread(self.cap.read)
+
+            if not ret:
+                print("Failed to read frame from camera.", flush=True)
+                await self.stop()
+                raise Exception("Camera read failed")
+
+            pts = int(self.frame_count * self.pts_increment)
+            time_base = Fraction(1, 90000) # 映像のtime_baseは通常90kHz
+
+            frame_rgb = await asyncio.to_thread(cv2.cvtColor, frame, cv2.COLOR_BGR2RGB)
+
+            video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+            video_frame.pts = pts
+            video_frame.time_base = time_base
+
+            self.frame_count += 1
+
+            return video_frame
+
+        except Exception:
+            print("!!! AN ERROR OCCURRED IN VideoStreamTrack.recv !!!")
+            raise
 
 # --- WebRTC Audio Track ---
 class AudioStreamTrack(MediaStreamTrack):
@@ -378,7 +395,7 @@ async def signaling_handler(websocket):
                         key_event = json.loads(message[4:])
                         send_key_event(key_event)
                     except Exception as e:
-                        print(f"Error processing KEY event: {e}", flush=True)
+                        await websocket.send(f"ERR:KEY:{e}")
                 elif message.startswith("MOUSE:"):
                     try:
                         _, params = message.split(':', 1)
@@ -390,7 +407,7 @@ async def signaling_handler(websocket):
                             int(values[7]), int(values[8])
                         )
                     except Exception as e:
-                        print(f"Error processing MOUSE event: {e}", flush=True)
+                        await websocket.send(f"ERR:MOUSE:{e}")
                 elif message == "CMD:ISTICKTOIT_USB":
                     try:
                         script_path = os.path.expanduser('/usr/bin/isticktoit.usb')
@@ -479,8 +496,32 @@ async def shutdown():
         if not task.done():
             task.cancel()
 
+async def send_to_discord():
+    load_dotenv()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # 実際に接続はせず、OSがどのIPを使うかを判断させる
+        s.connect(("8.8.8.8", 80))
+        ip_address = s.getsockname()[0]
+    except Exception:
+        ip_address = "127.0.0.1" # 取得失敗時のフォールバック
+    finally:
+        s.close()
+    async with aiohttp.ClientSession() as session:
+        webhook_url = os.getenv("DISCORD_WEBHOOK_URL")
+        payload = {"content": "✅ WebRTC: IP Address: " + ip_address + ":8765"}
+        try:
+            async with session.post(webhook_url, json=payload) as resp:
+                if 200 <= resp.status < 300:
+                    print("Message sent to Discord successfully.", flush=True)
+                else:
+                    print(f"Failed to send message to Discord: {resp.status}", flush=True)
+        except Exception as e:
+            print(f"Error sending message to Discord: {e}", flush=True)
+
 # --- WebSocket Server ---
 async def main():
+    await send_to_discord()
     logging.basicConfig(level=logging.DEBUG)
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))

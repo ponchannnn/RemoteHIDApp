@@ -214,13 +214,13 @@ function resizeVideoToWindow() {
   const toolbarHeight = toolbar ? toolbar.offsetHeight : 0;
   const winW = window.innerWidth;
   const winH = window.innerHeight;
-  const availableH = winH - toolbarHeight;
+  const availableH = winH - toolbarHeight - 10;
   const aspect = 16 / 9;
   let videoW = winW - 4;
   let videoH = (winW - 4) / aspect;
   if (videoH > availableH) {
     videoH = availableH - 4;
-    videoW = (availableH - 4) * aspect;
+    videoW = (availableH - 2) * aspect;
   }
   videoArea.style.width = videoW + "px";
   videoArea.style.height = videoH + "px";
