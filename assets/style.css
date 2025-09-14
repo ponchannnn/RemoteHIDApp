@@ -3,6 +3,9 @@
   --wine-red-light: #a02c40;
   --dark-bg: #141417;
   --panel-bg: #18181c;
+
+  --wine-red-rgb: 122,26,43;
+  --wine-red-light-rgb: 160,44,64;
 }
 
 body {
@@ -19,7 +22,7 @@ body {
   max-width: 900px;
   background: var(--panel-bg);
   border-radius: 0;
-  box-shadow: 0 2px 12px rgba(122,26,43,0.10);
+  box-shadow: 0 2px 12px rgba(var(--wine-red-rgb),0.10);
   padding: 24px 20px;
   border: 2px solid var(--wine-red);
 }
@@ -51,6 +54,7 @@ input#keyInput {
 
 select {
   margin-left: 8px;
+  margin-top: auto;
   padding: 8px 12px;
   font-size: 1rem;
   border: 2px solid var(--wine-red);
@@ -59,13 +63,13 @@ select {
   color: var(--wine-red);
   min-width: 220px;
   transition: border 0.2s, box-shadow 0.2s;
-  box-shadow: 0 1px 4px rgba(122,26,43,0.06);
+  box-shadow: 0 1px 4px rgba(var(--wine-red-rgb),0.06);
 }
 
 select:focus {
   border: 2px solid var(--wine-red-light);
   outline: none;
-  box-shadow: 0 2px 8px rgba(122,26,43,0.12);
+  box-shadow: 0 2px 8px rgba(var(--wine-red-light-rgb),0.12);
 }
 
 select:disabled {
@@ -85,10 +89,10 @@ select option {
 
 button {
   font-size: 1rem;
-  padding: 8px 18px;
+  padding: 8px 12px;
   background: #18181c;
   color: #f3f3f3;
-  border: 1px solid var(--wine-red);
+  border: 2px solid var(--wine-red);
   border-radius: 0;
   cursor: pointer;
   margin-right: 8px;
@@ -99,9 +103,27 @@ button {
 }
 
 button:hover {
+  animation: anima-button 1s;
   border-color: var(--wine-red-light);
   color: #fff;
   background: #23232a;
+}
+
+@keyframes anima-button {
+    0% {
+        box-shadow: 0 0 0 0 rgba(var(--wine-red-rgb), 0.5);
+    }
+    100% {
+        box-shadow: 0 0 0 1.2em rgb(0 0 0 / 0%);
+    }
+}
+
+button:disabled {
+  background: #23232a;
+  color: #888b97;
+  border: 1px solid #444857;
+  cursor: not-allowed;
+  box-shadow: none;
 }
 
 #statusLabel {

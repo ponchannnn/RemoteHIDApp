@@ -1,24 +1,27 @@
 const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
+const restartBtn = document.getElementById('restartBtn');
 const setupBtn = document.getElementById('setupBtn');
 const cleanupBtn = document.getElementById('cleanupBtn');
 const toolbar = document.querySelector('.toolbar');
 const videoArea = document.getElementById('videoArea');
 const webrtcVideo = document.getElementById('webrtcVideo');
 const webrtcAudio = document.getElementById('webrtcAudio');
-const videoStartBtn = document.getElementById('videoStartBtn');
-const videoStopBtn = document.getElementById('videoStopBtn');
+const serverVideoBtn = document.getElementById('serverVideoBtn');
 const audioDeviceSelect = document.getElementById('audioDeviceSelect');
 const videoDeviceSelect = document.getElementById('videoDeviceSelect');
-const micStartBtn = document.getElementById('micStartBtn');
-const micStopBtn = document.getElementById('micStopBtn');
+const clientMicSelect = document.getElementById('clientMicSelect');
+const serverMicBtn = document.getElementById('serverMicBtn');
+const clientMicBtn = document.getElementById('clientMicBtn');
 const statusLabel = document.getElementById('statusLabel');
 
 const BASE_WIDTH = 320;
 const BASE_HEIGHT = 240;
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
 
-let connecting = false;
+let connected = false;
+let serverVideoActive = false;
+let serverMicActive = false;
+
 let mouseX = webrtcVideo.width / 2;
 let mouseY = webrtcVideo.height / 2;
 let mouseButtons = { left: 0, right: 0, center: 0, side1: 0, side2: 0 };
@@ -33,11 +36,17 @@ let pc = null;
 let wantVideo = false;
 let wantAudio = false;
 
+let clientMicUse = false;
+let localStream = null;
+
 connectBtn.addEventListener('click', async () => {
-  if (connecting) return;
-  connecting = true;
+  if (connected) {
+    window.API.disconnect();
+    return;
+  }
+
   connectBtn.disabled = true;
-  connectBtn.textContent = '接続中...';
+  connectBtn.textContent = '🔄 接続中...';
   connectStatus = '🔄 接続中...';
   statusLabel.textContent = connectStatus;
 
@@ -45,11 +54,13 @@ connectBtn.addEventListener('click', async () => {
   const port = Number(document.getElementById('port').value);
   const result = await window.API.connect(ip, port);
 
-  connecting = false;
   if (result && result.connected) {
-    connectBtn.textContent = '接続済み';
-    connectBtn.disabled = true;
-    disconnectBtn.disabled = false;
+    connected = true;
+    connectBtn.textContent = '✅ 接続済み';
+    connectBtn.disabled = false;
+    restartBtn.disabled = false;
+    setupBtn.disabled = false;
+    cleanupBtn.disabled = false;
     connectStatus = '✅ 接続済み';
     // オーディオデバイスリストをセット
     audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
@@ -61,8 +72,10 @@ connectBtn.addEventListener('click', async () => {
         audioDeviceSelect.appendChild(opt);
       });
       audioDeviceSelect.disabled = false;
+      serverMicBtn.disabled = false;
     } else {
       audioDeviceSelect.disabled = true;
+      serverMicBtn.disabled = true;
     }
     // ビデオデバイスリストをセット
     videoDeviceSelect.innerHTML = '<option value="">ビデオデバイス選択</option>';
@@ -74,14 +87,15 @@ connectBtn.addEventListener('click', async () => {
         videoDeviceSelect.appendChild(opt);
       });
       videoDeviceSelect.disabled = false;
+      serverVideoBtn.disabled = false;
     } else {
       videoDeviceSelect.disabled = true;
+      serverVideoBtn.disabled = true;
     }
     updateStatusLabel();
   } else {
     connectBtn.textContent = '接続';
     connectBtn.disabled = false;
-    disconnectBtn.disabled = true;
     connectStatus = '❌ 接続失敗';
     statusLabel.textContent = connectStatus;
     audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
@@ -90,6 +104,9 @@ connectBtn.addEventListener('click', async () => {
     videoDeviceSelect.disabled = true;
     alert('接続失敗');
   }
+  setupMicrophoneSelection();
+  clientMicBtn.disabled = false;
+  clientMicSelect.disabled = false;
 });
 
 setupBtn.addEventListener('click', () => {
@@ -99,58 +116,113 @@ cleanupBtn.addEventListener('click', () => {
   window.API.usbCleanup();
 });
 
-disconnectBtn.addEventListener('click', () => {
-  window.API.disconnect();
+restartBtn.addEventListener('click', () => {
+  if (confirm("サーバーを再起動します。よろしいですか？")) {
+    window.API.restart();
+  }
 });
 
-videoStartBtn.onclick = () => {
-  const selectedDevice = videoDeviceSelect.value;
-  if (!selectedDevice) {
-    alert('ビデオデバイスを選択してください');
+serverVideoBtn.onclick = () => {
+  serverVideoBtn.disabled = true;
+  if (!connected) {
+    alert('サーバーに接続してください');
+    serverVideoBtn.disabled = false;
     return;
   }
-  window.API.videoStart();
-  wantVideo = true;
-  videoStartBtn.disabled = true;
-  videoStopBtn.disabled = false;
-};
 
-videoStopBtn.onclick = () => {
-  blackoutVideo();
-  window.API.videoStop();
-  wantVideo = false;
-  if (!wantVideo && !wantAudio && pc) {
-    pc.close();
-    pc = null;
+  if(serverVideoActive) {
+    const selectedDevice = videoDeviceSelect.value;
+    if (!selectedDevice) {
+      alert('ビデオデバイスを選択してください');
+      serverVideoBtn.disabled = false;
+      return;
+    }
+    serverVideoBtn.textContent = "🔄 ビデオ接続中...";
+    window.API.videoStart();
+    wantVideo = true;
+  } else {
+    serverVideoBtn.textContent = "🔄 ビデオ切断中...";
+    blackoutVideo();
+    window.API.videoStop();
+    wantVideo = false;
+    if (!wantVideo && !wantAudio && !clientMicUse && pc) {
+      pc.close();
+      pc = null;
+    }
   }
-  videoStartBtn.disabled = false;
-  videoStopBtn.disabled = true;
 };
 
-micStartBtn.onclick = () => {
-  const selectedDevice = audioDeviceSelect.value;
-  if (!selectedDevice) {
-    alert('オーディオデバイスを選択してください');
+serverMicBtn.onclick = () => {
+  serverMicBtn.disabled = true;
+  if (!connected) {
+    alert('サーバーに接続してください');
+    serverMicBtn.disabled = false;
     return;
   }
-  micStartBtn.disabled = true;
-  micStopBtn.disabled = false;
-  window.API.micStart(Number(selectedDevice));
-  wantAudio = true;
-  webrtcAudio.play().catch(e => {
-    console.warn("Pre-play failed, this is expected on first interaction.", e);
-  });
-};
 
-micStopBtn.onclick = () => {
-  window.API.micStop();
-  wantAudio = false;
-  if (!wantVideo && !wantAudio && pc) {
+  if (serverMicActive) {
+    const selectedDevice = audioDeviceSelect.value;
+    if (!selectedDevice) {
+      alert('オーディオデバイスを選択してください');
+      serverMicBtn.disabled = false;
+      return;
+    }
+    serverMicBtn.textContent = "🔄 マイク接続中...";
+    window.API.micStart(Number(selectedDevice));
+    wantAudio = true;
+    webrtcAudio.play().catch(e => {
+      console.warn("Pre-play failed, this is expected on first interaction.", e);
+    });
+  } else {
+    serverMicBtn.textContent = "🔄 マイク切断中...";
+    window.API.micStop();
+    wantAudio = false;
+    if (!wantVideo && !wantAudio && !clientMicUse && pc) {
     pc.close();
     pc = null;
+    }
   }
-  micStartBtn.disabled = false;
-  micStopBtn.disabled = true;
+};
+
+clientMicBtn.onclick = async () => {
+  clientMicBtn.disabled = true;
+  if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+  if (!clientMicUse) {
+    clientMicBtn.textContent = "🔄 マイク取得中...";
+    const selectedDeviceId = clientMicSelect.value;
+    if (!selectedDeviceId) {
+        alert("マイクが選択されていません。");
+        clientMicBtn.disabled = false;
+        clientMicBtn.textContent = "クライアントマイク";
+        return;
+    }
+    const constraints = {
+        audio: { deviceId: { exact: selectedDeviceId } },
+        video: false
+    };
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        clientMicBtn.textContent = "🔄 マイク接続中...";
+        clientMicUse = true;
+        window.API.clientMicStart();
+    } catch (e) {
+        alert("マイクの取得に失敗しました。");
+        clientMicBtn.disabled = false;
+        clientMicBtn.textContent = "クライアントマイク";
+        return;
+    }
+  } else {
+    clientMicBtn.textContent = "🔄 マイク切断中...";
+    clientMicUse = false;
+    if (!wantVideo && !wantAudio && !clientMicUse && pc) {
+      pc.close();
+      pc = null;
+    }
+    window.API.clientMicStop();
+  }
 };
 
 document.addEventListener('keydown', (e) => {
@@ -241,6 +313,32 @@ window.API.onWebRTCSignal(async (msg) => {
   }
 });
 
+async function setupMicrophoneSelection() {
+    clientMicSelect.innerHTML = '<option value="">オーディオデバイス検索中</option>';
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputDevices = devices.filter(device => device.kind === 'audioinput');
+
+      if (audioInputDevices.length === 0) {
+          clientMicSelect.innerHTML = '<option value="">オーディオデバイスが見つかりません</option>';
+          clientMicSelect.disabled = true;
+          return;
+      }
+      clientMicSelect.innerHTML = '';
+      audioInputDevices.forEach(device => {
+          const option = document.createElement('option');
+          option.value = device.deviceId;
+          option.textContent = device.label || `マイク ${clientMicSelect.length + 1}`;
+          clientMicSelect.appendChild(option);
+      });
+      clientMicSelect.disabled = false;
+
+    } catch (e) {
+        alert("デバイス一覧の取得中にエラーが発生しました:" + e);
+    }
+}
+setupMicrophoneSelection();
+
 async function startWebRTC() {
   if (pc) pc.close();
   pc = new RTCPeerConnection();
@@ -249,7 +347,15 @@ async function startWebRTC() {
     pc.addTransceiver('video', { direction: 'recvonly' });
   }
   if (wantAudio) {
-    pc.addTransceiver('audio', { direction: 'recvonly' });
+    if (clientMicUse && localStream) {
+      localStream.getAudioTracks().forEach(track => pc.addTrack(track, localStream));
+    } else if (!clientMicUse) {
+      pc.addTransceiver('audio', { direction: 'recvonly' });
+    }
+  } else if (!wantAudio && clientMicUse && localStream) {
+    console.log("Adding client mic track to PeerConnection");
+    pc.addTransceiver('audio', { direction: 'sendonly' });
+    localStream.getAudioTracks().forEach(track => pc.addTrack(track, localStream));
   }
 
   pc.ontrack = (event) => {
@@ -292,13 +398,15 @@ webrtcVideo.addEventListener('playing', () => console.log('video playing'));
 
 window.API.onAudioStatus((msg) => {
   if (msg === "STARTED") {
-    micStartBtn.disabled = true;
-    micStopBtn.disabled = false;
+    serverMicBtn.disabled = false;
+    serverMicBtn.textContent = "✅ サーバーマイク接続済み";
+    serverMicActive = true;
     micStatus = "ON";
     startWebRTC();
   } else if (msg === "STOPPED") {
-    micStartBtn.disabled = false;
-    micStopBtn.disabled = true;
+    serverMicBtn.disabled = false;
+    serverMicBtn.textContent = "サーバーマイク";
+    serverMicActive = false;
     micStatus = "OFF";
   }
   updateStatusLabel();
@@ -306,13 +414,15 @@ window.API.onAudioStatus((msg) => {
 
 window.API.onVideoStatus((msg) => {
   if (msg === "STARTED") {
-    videoStartBtn.disabled = true;
-    videoStopBtn.disabled = false;
+    serverVideoBtn.disabled = false;
+    serverVideoBtn.textContent = "✅ サーバービデオ接続済み";
+    serverVideoActive = true;
     videoStatus = "ON";
     startWebRTC();
   } else if (msg === "STOPPED") {
-    videoStartBtn.disabled = false;
-    videoStopBtn.disabled = true;
+    serverMicBtn.disabled = false;
+    serverVideoBtn.textContent = "サーバービデオ";
+    serverVideoActive = false;
     videoStatus = "OFF";
   } else if (msg === "ALREADY_ACTIVE") {
     videoStatus = "すでにON";
@@ -320,6 +430,23 @@ window.API.onVideoStatus((msg) => {
     videoStatus = "OFF";
   }
   updateStatusLabel();
+});
+
+window.API.onClientAudioStatus((msg) => {
+  if (msg === "STARTED") {
+    clientMicBtn.disabled = false;
+    clientMicBtn.textContent = "✅ クライアントマイク接続済み";
+    clientMicUse = true;
+    startWebRTC();
+  } else if (msg === "STOPPED") {
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+      localStream = null;
+    }
+    clientMicUse = false;
+    clientMicBtn.disabled = false;
+    clientMicBtn.textContent = "クライアントマイク";
+  }
 });
 
 window.API.onErrorMessage((msg) => {
@@ -342,24 +469,34 @@ function disconnectedStatus() {
     pc = null;
   }
   blackoutVideo();
+  connected = false;
+  connectBtn.textContent = "接続";
   connectStatus = "未接続";
+  connectBtn.disabled = false;
+  restartBtn.disabled = true;
+  serverMicActive = false;
+  serverMicBtn.textContent = "サーバーマイク";
+  serverMicBtn.disabled = false;
+  serverVideoActive = false;
+  serverVideoBtn.textContent = "ビデオ";
+  serverVideoBtn.disabled = false;
+  clientMicBtn.textContent = "クライアントマイク";
+  clientMicBtn.disabled = false;
   micStatus = "OFF";
   videoStatus = "OFF";
   usbStatus = "";
   errorStatus = "";
   wantVideo = false;
   wantAudio = false;
-  connectBtn.disabled = false;
-  disconnectBtn.disabled = true;
-  micStartBtn.disabled = false;
-  micStopBtn.disabled = true;
-  videoStartBtn.disabled = false;
-  videoStopBtn.disabled = true;
+  clientMicUse = false;
+  localStream = null;
   
   audioDeviceSelect.innerHTML = '<option value="">オーディオデバイス選択</option>';
   videoDeviceSelect.innerHTML = '<option value="">ビデオデバイス選択</option>';
+  clientMicSelect.innerHTML = '<option value="">USBデバイス選択</option>';
   audioDeviceSelect.disabled = true;
   videoDeviceSelect.disabled = true;
+  clientMicSelect.disabled = true;
   updateStatusLabel();
 }
 

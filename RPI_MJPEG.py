@@ -27,6 +27,7 @@ import re
 import signal
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
+from aiortc.mediastreams import MediaStreamError
 from fractions import Fraction
 from av import AudioFrame, VideoFrame
 import logging
@@ -67,6 +68,7 @@ MODIFIER_MAP = {
 }
 NULL_CHAR = chr(0)
 
+main_task = None
 active_websockets = set()
 main_loop = None
 
@@ -303,6 +305,7 @@ async def signaling_handler(websocket):
     audio_device = None
     video_active = False
     audio_active = False
+    log_streaming_task = None
 
     async def start_webrtc():
         nonlocal pc, video_track, audio_track, relay
@@ -332,6 +335,35 @@ async def signaling_handler(websocket):
                     "sdpMLineIndex": candidate.sdp_mline_index
                 }))
 
+        @pc.on("track")
+        async def on_track(track):
+            if track.kind == "audio":
+                stream = None
+                try:
+                    while True:
+                        frame = await track.recv()
+                        if stream is None:
+                            channels = len(frame.layout.channels)
+                            samplerate = frame.sample_rate
+                            print(f"🔊 Detected client audio format: {samplerate} Hz, {channels} channel(s)")
+                            stream = sd.OutputStream(
+                                device="USB",   # デバイス名に'USB'が含まれるものを自動で選択
+                                samplerate=samplerate,
+                                channels=channels,
+                                dtype='int16'
+                            )
+                            print(f"{sd.query_devices(stream.device)["name"]}", flush=True)
+                            stream.start()
+                        raw_data = frame.to_ndarray()
+                        reshaped_data = raw_data.reshape(-1, 2)
+                        await asyncio.to_thread(stream.write, reshaped_data)
+
+                except MediaStreamError:
+                    print("Client audio stream ended.")
+                finally:
+                    stream.stop()
+                    stream.close()
+
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
             print(f"RTC connection state: {pc.connectionState}", flush=True)
@@ -349,6 +381,32 @@ async def signaling_handler(websocket):
         if audio_track:
             await audio_track.stop()
             audio_track = None
+    
+    async def stream_logs(websocket):
+        await websocket.send("LOG:Starting log stream...")
+        process = None
+        try:
+            command = "journalctl -f -n 50 -t startRPi.sh | grep -v 'websockets.server'"
+            process = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                await websocket.send("LOG:" + line.decode("utf-8").rstrip())
+        except asyncio.CancelledError:
+            print("Log streaming cancelled.", flush=True)
+            process.terminate()
+            await process.wait()
+        except Exception as e:
+            print(f"Error in log streaming: {e}", flush=True)
+        finally:
+            if process and process.returncode is None:
+                process.terminate()
+                await process.wait()
 
     try:
         async for message in websocket:
@@ -390,6 +448,23 @@ async def signaling_handler(websocket):
                     video_active = False
                     await stop_webrtc()
                     await websocket.send("VIM:STOPPED")
+                elif message.startswith("CLIENT_AUDIO:ONSTART"):
+                    await start_webrtc()
+                    await websocket.send("ACM:STARTED")
+                elif message.startswith("CLIENT_AUDIO:ONSTOP"):
+                    await stop_webrtc()
+                    await websocket.send("ACM:STOPPED")
+                elif message.startswith("LOGS:ONSTART"):
+                    if log_streaming_task:
+                        log_streaming_task.cancel()
+                        log_streaming_task = None
+                    log_streaming_task = asyncio.create_task(stream_logs(websocket))
+                    await websocket.send("LOGS:STARTED")
+                elif message.startswith("LOGS:ONSTOP"):
+                    if log_streaming_task:
+                        log_streaming_task.cancel()
+                        log_streaming_task = None
+                    await websocket.send("LOGS:STOPPED")
                 elif message.startswith("KEY:"):
                     try:
                         key_event = json.loads(message[4:])
@@ -435,6 +510,9 @@ async def signaling_handler(websocket):
                         await websocket.send('ISM:OK_REMOVE_GADGET')
                     except Exception as e:
                         await websocket.send(f'ISM:ERR_REMOVE_GADGET:{e}')
+                elif message == "RESTART:NOW":
+                    await shutdown()
+                    sys.exit(10)
                 # --- WebRTCシグナリング ---
                 else:
                     try:
@@ -488,13 +566,19 @@ async def signaling_handler(websocket):
     finally:
         await stop_webrtc()
         active_websockets.discard(websocket)
+        if log_streaming_task:
+            log_streaming_task.cancel()
+            log_streaming_task = None
 
 async def shutdown():
+    global main_task
     print("Shutting down, closing websockets...", flush=True)
     await asyncio.gather(*(ws.close() for ws in list(active_websockets)), return_exceptions=True)
     for task in asyncio.all_tasks():
         if not task.done():
             task.cancel()
+    if main_task:
+        main_task.cancel()
 
 async def send_to_discord():
     load_dotenv()
@@ -521,16 +605,17 @@ async def send_to_discord():
 
 # --- WebSocket Server ---
 async def main():
+    global main_task
     await send_to_discord()
     logging.basicConfig(level=logging.DEBUG)
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
     async with websockets.serve(signaling_handler, "0.0.0.0", 8765):
-        print("WebRTC signaling server started on ws://0.0.0.0:8765")
+        main_task = asyncio.current_task()
         try:
             await asyncio.Future()
         except asyncio.CancelledError:
-            pass
+            print("Main task cancelled. Server is stopping.")
 
 if __name__ == "__main__":
     asyncio.run(main())

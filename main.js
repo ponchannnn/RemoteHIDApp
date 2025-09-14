@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu} = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, session } = require('electron');
 const WebSocket = require('ws');
 let ws = null;
 
@@ -19,6 +19,22 @@ const menuTemplate = [
                         title: 'WebRTC Internals'
                     });
                     debugWindow.loadURL('chrome://webrtc-internals');
+                }
+            },
+            {
+                label: 'Open Server Logs',
+                click: () => {
+                    const logWindow = new BrowserWindow({
+                        width: 800,
+                        height: 600,
+                        title: 'Server Logs',
+                        webPreferences: {
+                            preload: __dirname + '/logs-preload.js',
+                            contextIsolation: true,
+                            nodeIntegration: false
+                        }
+                    });
+                    logWindow.loadFile('public/logs.html');
                 }
             },
             { role: 'toggleDevTools' } // 通常の開発者ツールを開くメニュー
@@ -44,7 +60,16 @@ function createWindow() {
   win.loadFile('public/index.html');
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    session.defaultSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+        if (permission === 'media') { // audio/videoの許可要求
+            return true;
+        }
+        return false;
+    });
+
+    createWindow();
+});
 
 // 接続要求
 ipcMain.handle('connect', async (event, { ip, port }) => {
@@ -92,7 +117,6 @@ ipcMain.handle('connect', async (event, { ip, port }) => {
       } else if (typeof data === 'string') {
         header = data.slice(0, 4);
       }
-
       if (header === "AUL:") {
         // 音声デバイスリスト
         let json = Buffer.isBuffer(data) ? data.toString('utf8').slice(4) : data.slice(4);
@@ -101,18 +125,24 @@ ipcMain.handle('connect', async (event, { ip, port }) => {
         // 映像デバイスリスト
         let json = Buffer.isBuffer(data) ? data.toString('utf8').slice(4) : data.slice(4);
         win.webContents.send('video-device-list', JSON.parse(json));
-      } else if (header === "AUM:" || header === "VIM:" || header === "ERM:" || header === "ISM:") {
+      } else if (header === "AUM:" || header === "VIM:" || header === "ACM:" || header === "ERM:" || header === "ISM:") {
         // 状態やエラー通知
         let text = Buffer.isBuffer(data) ? data.toString('utf8').slice(4) : data.slice(4);
         if (header === "AUM:") {
           win.webContents.send('audio-status', text);
         } else if (header === "VIM:") {
           win.webContents.send('video-status', text);
+        } else if (header === "ACM:") {
+          win.webContents.send('client-audio-status', text);
         } else if (header === "ERM:") {
           win.webContents.send('error-message', text);
         } else if (header === "ISM:") {
           win.webContents.send('usb-message', text);
         }
+      } else if (header === "LOG:") {
+        let content = Buffer.isBuffer(data) ? data.toString('utf8').slice(4) : data.slice(4);
+        console.log(content);
+        win.webContents.send('log-message', content);
       } else {
         // WebRTCシグナリング(JSON)の中継
         try {
@@ -129,6 +159,12 @@ ipcMain.handle('connect', async (event, { ip, port }) => {
 ipcMain.on('disconnect', () => {
   if (ws) {
     ws.close();
+  }
+});
+
+ipcMain.on('restart', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('RESTART:NOW');
   }
 });
 
@@ -177,6 +213,17 @@ ipcMain.on('mic-stop', () => {
   }
 });
 
+ipcMain.on('client-mic-start', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('CLIENT_AUDIO:ONSTART');
+  }
+});
+ipcMain.on('client-mic-stop', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('CLIENT_AUDIO:ONSTOP');
+  }
+});
+
 ipcMain.on('webrtc-signal', (event, msg) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(msg));
@@ -191,6 +238,17 @@ ipcMain.on('send-key', (event, keyEvent) => {
 ipcMain.on('send-mouse', (event, { x, y, left = 0, right = 0, center = 0, side1 = 0, side2 = 0, wheel = 0, hwheel = 0 }) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(`MOUSE:${x},${y},${left},${right},${center},${side1},${side2},${wheel},${hwheel}`);
+  }
+});
+
+ipcMain.on('logs-start', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('LOGS:ONSTART');
+  }
+});
+ipcMain.on('logs-stop', () => {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send('LOGS:ONSTOP');
   }
 });
 

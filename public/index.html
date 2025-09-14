@@ -10,19 +10,21 @@
     <input id="ip" placeholder="IPアドレス" value="192.168.11.14">
     <input id="port" placeholder="ポート" value="8765">
     <button id="connectBtn">接続</button>
-    <button id="disconnectBtn" disabled>切断</button>
-    <button id="setupBtn">USB有効化</button>
-    <button id="cleanupBtn">USB無効化</button>
+    <button id="restartBtn" disabled>再起動</button>
+    <button id="setupBtn" disabled>USB有効化</button>
+    <button id="cleanupBtn" disabled>USB無効化</button>
     <select id="videoDeviceSelect" disabled>
       <option value="">ビデオデバイス選択</option>
     </select>
-    <button id="videoStartBtn">ビデオスタート</button>
-    <button id="videoStopBtn" disabled>ビデオストップ</button>
+    <button id="serverVideoBtn" disabled>サーバービデオ</button>
     <select id="audioDeviceSelect" disabled>
       <option value="">オーディオデバイス選択</option>
     </select>
-    <button id="micStartBtn">マイクスタート</button>
-    <button id="micStopBtn" disabled>マイクストップ</button>
+    <button id="serverMicBtn" disabled>サーバーマイク</button>
+    <select id="clientMicSelect" disabled>
+      <option value="">USBデバイス選択</option>
+    </select>
+    <button id="clientMicBtn" disabled>クライアントマイク</button>
     <span id="statusLabel">未接続</span>
   </div>
   <div class="video-area" id="videoArea">

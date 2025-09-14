@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Server Logs</title>
+    <style>
+        body { background-color: #1e1e1e; color: #d4d4d4; font-family: monospace; margin: 0; display: flex; flex-direction: column; height: 100vh; }
+        #controls { padding: 10px; background-color: #333; border-bottom: 1px solid #444; }
+        button { padding: 5px 10px; }
+        #log-container { flex-grow: 1; overflow-y: auto; padding: 10px; }
+        pre { white-space: pre-wrap; word-wrap: break-word; margin: 0; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <button id="logBtn">ログストリーミング開始</button>
+    </div>
+    <div id="log-container">
+        <pre id="log-content"></pre>
+    </div>
+
+    <script>
+        const logBtn = document.getElementById('logBtn');
+        const logContent = document.getElementById('log-content');
+        let isStreaming = false;
+
+        logBtn.onclick = () => {
+            logBtn.disabled = true;
+            isStreaming = !isStreaming;
+            if (isStreaming) {
+                logBtn.textContent = '取得中... (停止するには再度クリック)';
+                window.logAPI.onLogStart();
+            } else {
+                logBtn.textContent = 'ログストリーミング開始';
+                window.logAPI.onLogStop();
+            }
+            logBtn.disabled = false;
+        };
+
+        window.logAPI.onLogMessage((message) => {
+            const logEntry = document.createElement('div');
+            logEntry.textContent = message;
+            logContent.appendChild(logEntry);
+            logContent.scrollTop = logContent.scrollHeight;
+        });
+    </script>
+</body>
+</html>
