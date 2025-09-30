@@ -1,4 +1,5 @@
 const { app, BrowserWindow, ipcMain, Menu, session } = require('electron');
+const { autoUpdater } = require('electron-updater');
 const WebSocket = require('ws');
 let ws = null;
 
@@ -147,7 +148,7 @@ ipcMain.handle('connect', async (event, { ip, port }) => {
         // WebRTCシグナリング(JSON)の中継
         try {
           const msg = JSON.parse(Buffer.isBuffer(data) ? data.toString('utf8') : data);
-          if (msg.type === "answer" || msg.type === "ice") {
+          if (msg.type === "answer" || msg.type === "ice" || msg.type === "offer") {
             win.webContents.send('webrtc-signal', msg);
           }
         } catch (e) {}
@@ -191,9 +192,9 @@ ipcMain.on('usb-cleanup', () => {
   }
 });
 
-ipcMain.on('video-start', () => {
+ipcMain.on('video-start', (event, deviceIndex) => {
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send('VIDEO:ONSTART');
+    ws.send(`VIDEO:ONSTART:${deviceIndex}`);
   }
 });
 ipcMain.on('video-stop', () => {
@@ -258,6 +259,9 @@ app.on('before-quit', () => {
   }
 });
 
+app.on('ready', () => {
+  autoUpdater.checkForUpdatesAndNotify();
+});
 
 process.on('uncaughtException', (err) => {
   if (ws) {

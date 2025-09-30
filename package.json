@@ -1,15 +1,37 @@
 {
-  "name": "keyboardapp",
+  "name": "rpi-remote-app",
   "version": "1.0.0",
   "main": "main.js",
+  "build": {
+    "appId": "com.ponCHANNN.rpi-remote-app",
+    "productName": "Raspberry Pi Remote App",
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ponCHANNN",
+        "repo": "RemoteHIDApp"
+      }
+    ]
+  },
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder"
   },
   "author": "ponCHANNN",
   "license": "ISC",
   "description": "",
   "dependencies": {
-    "electron": "^36.2.1",
+    "electron-updater": "^6.6.2",
     "ws": "^8.18.2"
+  },
+  "devDependencies": {
+    "electron": "^36.2.1",
+    "electron-builder": "^26.0.12"
   }
 }

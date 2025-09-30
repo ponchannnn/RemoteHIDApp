@@ -29,6 +29,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaRelay
 from aiortc.mediastreams import MediaStreamError
 from fractions import Fraction
+import av
 from av import AudioFrame, VideoFrame
 import logging
 import aiohttp
@@ -73,13 +74,14 @@ active_websockets = set()
 main_loop = None
 
 # グローバル変数（映像送出制御用）
-video_streaming_active = False
+video_streaming_class = None
 video_capture_device = 0 # キャプチャーデバイス番号 (例: /dev/video0)
 jpeg_quality = 70 # JPEG品質 (0-100)
 target_fps = 60 # 目標フレームレート
 
 audio_input_device = None # 音声入力デバイス番号（Noneの場合はデフォルトデバイスを使用）
-audio_streaming_active = False
+audio_streaming_class = None
+audio_streaming_samplerate = None
 gstreamer_proc = None
 
 def write_report(report):
@@ -182,10 +184,10 @@ def get_video_device_name(dev):
 # --- WebRTC Video Track ---
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
-    def __init__(self, device=0, width=1280, height=720, fps=60):
+    def __init__(self, width=1280, height=720, fps=30):
 
         super().__init__()
-        self.device = device
+        self.device = video_capture_device
         self.width = width
         self.height = height
         self.fps = fps
@@ -204,7 +206,11 @@ class VideoStreamTrack(MediaStreamTrack):
         self.cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'YUYV'))
         self.start_time = time.time()
 
-    async def stop(self):
+    def stop(self):
+        asyncio.create_task(self._async_stop())
+        super().stop()
+
+    async def _async_stop(self):
         async with self.lock:
             if self.cap:
                 await asyncio.to_thread(self.cap.release)
@@ -243,30 +249,46 @@ class VideoStreamTrack(MediaStreamTrack):
 # --- WebRTC Audio Track ---
 class AudioStreamTrack(MediaStreamTrack):
     kind = "audio"
-    def __init__(self, device=None, samplerate=16000, channels=2):
+    def __init__(self, samplerate=48000, channels=2):
         super().__init__()
-        self.device = device
+        self.device = audio_input_device
         self.channels = channels
-        device_info = sd.query_devices(device)
-        self.samplerate = int(device_info['default_samplerate'])
+        self.samplerate = samplerate
         self.samples_per_frame = int(self.samplerate * 0.02)
         self.stream = None
+
+        try:
+            sd.check_input_settings(device=self.device, samplerate=self.samplerate)
+            print(f"✅ Mic will run at the desired {self.samplerate} Hz.")
+        except Exception as e:
+            print(f"⚠️ Warning: {self.samplerate} Hz is not supported by the device ({e}).")
+            device_info = sd.query_devices(self.device)
+            self.samplerate = int(device_info['default_samplerate'])
 
         self._start_time = None
         self._timestamp = 0
 
         self.lock = asyncio.Lock()
 
-    def start(self):
+    def start(self) -> bool:
+        global audio_streaming_active
+        audio_streaming_active = True
         print("Starting audio stream...", flush=True)
         try:
             self.stream = sd.InputStream(samplerate=self.samplerate, channels=self.channels, dtype='int16', device=self.device)
             self.stream.start()
+            self._start_time = time.time()
+            return True
         except Exception as e:
             print(f"Error starting audio stream: {e}", flush=True)
-        self._start_time = time.time()
+            self.stream = None
+            return False
 
-    async def stop(self):
+    def stop(self):
+        asyncio.create_task(self._stop_async())
+        super().stop()
+
+    async def _stop_async(self):
         async with self.lock:
             if self.stream:
                 await asyncio.to_thread(self.stream.stop)
@@ -279,8 +301,12 @@ class AudioStreamTrack(MediaStreamTrack):
         try:
             async with self.lock:
                 if not self.stream:
-                    self.start()
-                data, _ = await asyncio.to_thread(self.stream.read, self.samples_per_frame)
+                    if not self.start():
+                        return None
+                try:
+                    data, _ = await asyncio.to_thread(self.stream.read, self.samples_per_frame)
+                except sd.PortAudioError as e:
+                    print(f"Error reading from audio stream: {e}", flush=True)
             data_reshaped = data.reshape(1, -1)
             frame = AudioFrame.from_ndarray(
                 data_reshaped, format="s16", layout="stereo" if self.channels == 2 else "mono"
@@ -291,39 +317,33 @@ class AudioStreamTrack(MediaStreamTrack):
             self._timestamp += self.samples_per_frame
             return frame
         except Exception as e:
-            print(f"Error receiving audio frame: {e}", flush=True)
+            print(f"Error creating audio frame: {e}", flush=True)
 
 # --- WebSocket Signaling Handler ---
 async def signaling_handler(websocket):
+    global video_capture_device, audio_input_device
     active_websockets.add(websocket)
 
     pc = None
     relay = MediaRelay()
-    video_track = None
-    audio_track = None
-    video_device = 0
-    audio_device = None
-    video_active = False
-    audio_active = False
+    server_video_track = None
+    server_audio_track = None
     log_streaming_task = None
 
     async def start_webrtc():
-        nonlocal pc, video_track, audio_track, relay
-        if video_track:
-            video_track.stop()
-            video_track = None
-        if audio_track:
-            await audio_track.stop()
-            audio_track = None
+        print("????????????start_webrtc called", flush=True)
+        global audio_streaming_samplerate
+        nonlocal pc, server_video_track, server_audio_track
+        if server_video_track:
+            server_video_track.stop()
+            server_video_track = None
+        if server_audio_track:
+            await server_audio_track.stop()
+            server_audio_track = None
+            audio_streaming_samplerate = None
         if pc:
             await pc.close()
         pc = RTCPeerConnection()
-        if video_active:
-            video_track = VideoStreamTrack(device=video_device)
-            pc.addTrack(relay.subscribe(video_track))
-        if audio_active:
-            audio_track = AudioStreamTrack(device=audio_device)
-            pc.addTrack(audio_track)
 
         @pc.on("icecandidate")
         async def on_icecandidate(candidate):
@@ -366,21 +386,22 @@ async def signaling_handler(websocket):
 
         @pc.on("connectionstatechange")
         async def on_connectionstatechange():
-            print(f"RTC connection state: {pc.connectionState}", flush=True)
+            if pc:
+                print(f"RTC connection state: {pc.connectionState}", flush=True)
 
 
     async def stop_webrtc():
         print("stop_webrtc called", flush=True)
-        nonlocal pc, video_track, audio_track
-        if pc:
+        nonlocal pc, server_video_track, server_audio_track
+        if server_video_track:
+            server_video_track.stop()
+            server_video_track = None
+        if server_audio_track:
+            await server_audio_track.stop()
+            server_audio_track = None
+        if pc and pc.connectionState != "closed":
             await pc.close()
-            pc = None
-        if video_track:
-            video_track.stop()
-            video_track = None
-        if audio_track:
-            await audio_track.stop()
-            audio_track = None
+        pc = None
     
     async def stream_logs(websocket):
         await websocket.send("LOG:Starting log stream...")
@@ -408,6 +429,62 @@ async def signaling_handler(websocket):
                 process.terminate()
                 await process.wait()
 
+    async def update_connection():
+        nonlocal pc
+        for transceiver in pc.getTransceivers():
+            kind = transceiver.kind
+            sender = next((s for s in pc.getSenders() if s.track and s.track.kind == kind), None)
+            direction = get_direction_from_sdp(pc.remoteDescription.sdp, kind)
+            print(f"Transceiver kind: {kind}, direction: {direction}, sender present: {bool(sender)}", flush=True)
+
+            if direction in ["recvonly", "sendrecv"]:
+                if not sender:
+                    if kind == "audio":
+                        server_audio_track = AudioStreamTrack()
+                        pc.addTrack(server_audio_track)
+                        await websocket.send("AUM:STARTED")
+                    elif kind == "video":
+                        server_video_track = VideoStreamTrack()
+                        pc.addTrack(server_video_track)
+                        await websocket.send("VIM:STARTED")
+
+            elif direction in ["sendonly", "inactive"]:
+                if sender:
+                    print(f"Stopping {kind} track as direction is {direction}", flush=True)
+                    try:
+                        if sender.track:
+                            print(f"Stopping {kind} track...", flush=True)
+                            sender.track.stop()
+                        sender.replaceTrack(None)
+                    except Exception as e:
+                        print(f"Error stopping track: {e}", flush=True)
+                    if kind == "audio":
+                        print("Stopping server audio track...", flush=True)
+                        server_audio_track = None
+                        await websocket.send("AUM:STOPPED")
+                    elif kind == "video":
+                        server_video_track = None
+                        await websocket.send("VIM:STOPPED")
+
+            is_still_active = any(get_direction_from_sdp(pc.remoteDescription.sdp, t.kind) != "inactive" for t in pc.getTransceivers())
+
+            if not is_still_active:
+                await pc.close()
+                pc = None
+
+    def get_direction_from_sdp(sdp, kind="audio"):
+        media_section = re.search(rf"m={kind}.*?(?=\r\nm=|\Z)", sdp, re.DOTALL)
+        if not media_section:
+            return "inactive"
+
+        section_text = media_section.group(0)
+        if "a=sendrecv" in section_text: return "sendrecv"
+        if "a=sendonly" in section_text: return "sendonly"
+        if "a=recvonly" in section_text: return "recvonly"
+        if "a=inactive" in section_text: return "inactive"
+
+        return "sendrecv"
+
     try:
         async for message in websocket:
             # --- 制御コマンド ---
@@ -420,36 +497,27 @@ async def signaling_handler(websocket):
                     parts = message.split(":")
                     if len(parts) >= 3:
                         try:
-                            audio_device = int(parts[2])
+                            audio_input_device = int(parts[2])
                         except Exception:
-                            audio_device = None
+                            audio_input_device = None
                     else:
-                        audio_device = None
-                    audio_active = True
-                    await start_webrtc()
-                    await websocket.send("AUM:STARTED")
+                        audio_input_device = None
+                    await websocket.send("AUM:STARTING")
                 elif message.startswith("AUDIO:ONSTOP"):
-                    audio_active = False
-                    await stop_webrtc()
-                    await websocket.send("AUM:STOPPED")
+                    await websocket.send("AUM:STOPPING")
                 elif message.startswith("VIDEO:ONSTART"):
                     parts = message.split(":")
                     if len(parts) >= 3:
                         try:
-                            video_device = int(parts[2])
+                            video_capture_device = int(parts[2])
                         except Exception:
-                            video_device = 0
+                            video_capture_device = 0
                     else:
-                        video_device = 0
-                    video_active = True
-                    await start_webrtc()
-                    await websocket.send("VIM:STARTED")
+                        video_capture_device = 0
+                    await websocket.send("VIM:STARTING")
                 elif message.startswith("VIDEO:ONSTOP"):
-                    video_active = False
-                    await stop_webrtc()
-                    await websocket.send("VIM:STOPPED")
+                    await websocket.send("VIM:STOPPING")
                 elif message.startswith("CLIENT_AUDIO:ONSTART"):
-                    await start_webrtc()
                     await websocket.send("ACM:STARTED")
                 elif message.startswith("CLIENT_AUDIO:ONSTOP"):
                     await stop_webrtc()
@@ -522,6 +590,9 @@ async def signaling_handler(websocket):
                                 await start_webrtc()
                             offer = RTCSessionDescription(sdp=msg["sdp"], type=msg["type"])
                             await pc.setRemoteDescription(offer)
+                            await update_connection()
+                            if not pc:
+                                continue
                             answer = await pc.createAnswer()
                             await pc.setLocalDescription(answer)
                             await websocket.send(json.dumps({"type": "answer", "sdp": pc.localDescription.sdp}))
@@ -561,6 +632,8 @@ async def signaling_handler(websocket):
                             await pc.addIceCandidate(candidate)
                     except Exception as e:
                         print(f"WebRTC signaling error: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
             else:
                 print(f"Received unexpected binary data: {len(message)} bytes", flush=True)
     finally:
@@ -607,7 +680,7 @@ async def send_to_discord():
 async def main():
     global main_task
     await send_to_discord()
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     for sig in (signal.SIGTERM, signal.SIGINT):
         asyncio.get_running_loop().add_signal_handler(sig, lambda: asyncio.create_task(shutdown()))
     async with websockets.serve(signaling_handler, "0.0.0.0", 8765):

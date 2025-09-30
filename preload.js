@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('API', {
   restart: () => ipcRenderer.send('restart'),
   usbSetup: () => ipcRenderer.send('usb-setup'),
   usbCleanup: () => ipcRenderer.send('usb-cleanup'),
-  videoStart: () => ipcRenderer.send('video-start'),
+  videoStart: (deviceIndex) => ipcRenderer.send('video-start', deviceIndex),
   videoStop: () => ipcRenderer.send('video-stop'),
   micStart: (deviceIndex) => ipcRenderer.send('mic-start', deviceIndex),
   micStop: () => ipcRenderer.send('mic-stop'),
